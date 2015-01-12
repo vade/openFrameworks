@@ -37,6 +37,8 @@
 @synthesize playbackRate = _playbackRate;
 @synthesize bLoops = _bLoops;
 
+@synthesize isHSLStream = _isHSLStream;
+
 //--------------------------------------------------------------
 - (id)init
 {
@@ -66,7 +68,8 @@
 {
     // kCVPixelFormatType_32ARGB, kCVPixelFormatType_32BGRA, kCVPixelFormatType_422YpCbCr8
     return @{
-             (NSString *)kCVPixelBufferOpenGLCompatibilityKey : [NSNumber numberWithBool:self.useTexture],
+			 (NSString*) kCVPixelBufferIOSurfacePropertiesKey : @{}, // generally want this especially on iOS
+             (NSString *)kCVPixelBufferOpenGLCompatibilityKey : @YES, // should never be no.
              (NSString *)kCVPixelBufferPixelFormatTypeKey     : [NSNumber numberWithInt:kCVPixelFormatType_32ARGB]
 //             [NSNumber numberWithInt:kCVPixelFormatType_422YpCbCr8]
             };
@@ -87,89 +90,168 @@
 //--------------------------------------------------------------
 - (void)loadURL:(NSURL *)url
 {
-    _bLoading = YES;
-    _bLoaded = NO;
-    _bAudioLoaded = NO;
-    _bPaused = NO;
-    _bMovieDone = NO;
-    
-    _frameRate = 0.0;
-    _playbackRate = 1.0;
-    
-//    _useTexture = YES;
-//    _useAlpha = NO;
-    
-    NSLog(@"Loading %@", [url absoluteString]);
-    
-    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
-    NSString *tracksKey = @"tracks";
-    
-    [asset loadValuesAsynchronouslyForKeys:@[tracksKey] completionHandler: ^{
-        static const NSString *kItemStatusContext;
-        // Perform the following back on the main thread
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // Check to see if the file loaded
-            NSError *error;
-            AVKeyValueStatus status = [asset statusOfValueForKey:tracksKey error:&error];
-            
-            if (status == AVKeyValueStatusLoaded) {
-                // Asset metadata has been loaded, set up the player.
-                
-                // Extract the video track to get the video size and other properties.
-                AVAssetTrack *videoTrack = [[asset tracksWithMediaType:AVMediaTypeVideo] objectAtIndex:0];
-                _videoSize = [videoTrack naturalSize];
-                _currentTime = kCMTimeZero;
-                _duration = asset.duration;
-                _frameRate = [videoTrack nominalFrameRate];
-                
-                self.playerItem = [AVPlayerItem playerItemWithAsset:asset];
-                [self.playerItem addObserver:self forKeyPath:@"status" options:0 context:&kItemStatusContext];
-                
-                // Notify this object when the player reaches the end.
-                // This allows us to loop the video.
-                [[NSNotificationCenter defaultCenter] addObserver:self
-                                                         selector:@selector(playerItemDidReachEnd:)
-                                                             name:AVPlayerItemDidPlayToEndTimeNotification
-                                                           object:self.playerItem];
-                
-                [self.player replaceCurrentItemWithPlayerItem:self.playerItem];
-                
-                // Create and attach video output.
-                self.playerItemVideoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:[self pixelBufferAttributes]];
-                [self.playerItemVideoOutput autorelease];
-                if (self.playerItemVideoOutput) {
-                    [(AVPlayerItemVideoOutput *)self.playerItemVideoOutput setSuppressesPlayerRendering:YES];
-                }
-                [self.player.currentItem addOutput:self.playerItemVideoOutput];
-                
-                // Create CVOpenGLTextureCacheRef for optimal CVPixelBufferRef to GL texture conversion.
-                if (self.useTexture && !_textureCache) {
-                    CVReturn err = CVOpenGLTextureCacheCreate(kCFAllocatorDefault, NULL,
-                                                              CGLGetCurrentContext(), CGLGetPixelFormat(CGLGetCurrentContext()),
-                                                              NULL, &_textureCache);
-//                                                              (CFDictionaryRef)ctxAttributes, &_textureCache);
-                    if (err != noErr) {
-                        NSLog(@"Error at CVOpenGLTextureCacheCreate %d", err);
-                    }
-                }
-                
-                _bLoading = NO;
-                _bLoaded = YES;
-            }
-            else {
-                _bLoading = NO;
-                _bLoaded = NO;
-                NSLog(@"There was an error loading the file: %@", error);
-            }
-        });
-    }];
+	_bLoading = YES;
+	_bLoaded = NO;
+	_bAudioLoaded = NO;
+	_bPaused = NO;
+	_bMovieDone = NO;
+	
+	_frameRate = 0.0;
+	_playbackRate = 1.0;
+	
+	//    _useTexture = YES;
+	//    _useAlpha = NO;
+	
+	NSLog(@"Loading %@", [url absoluteString]);
+	
+	// So HLS streaming requires different loading than file asset loading local or remote mp4's / movs:
+	// From Apple :
+	//     To create and prepare an HTTP live stream for playback. Initialize an instance of AVPlayerItem using the URL.
+	//     (You cannot directly create an AVAsset instance to represent the media in an HTTP Live Stream.)
+	
+	// We check if we load an HLS stream by seeing if its a .m3u8 extension. This *MIGHT* be niave
+	// Anyway, adjust the logic here if you doubt my commitment to sparklemotion.
+	
+	BOOL isHSLURL = FALSE;
+	
+	if( [[url pathExtension] isEqualToString:@"m3u8"])
+		isHSLURL = TRUE;
+	
+	if(isHSLURL)
+		[self loadHLSURL:url];
+	else
+		[self loadFileURL:url];
+}
+
+//--------------------------------------------------------------
+- (void) loadHLSURL:(NSURL*)url
+{
+	CVReturn err = [self updatePlayerItem:[AVPlayerItem playerItemWithURL:url]];
+	if(err == kCVReturnSuccess)
+	{
+		_bLoading = NO;
+		_bLoaded = YES;
+		_isHSLStream = YES;
+	}
+	else
+	{
+		_bLoading = NO;
+		_bLoaded = NO;
+		_isHSLStream = NO;
+		NSLog(@"There was an error loading the file: %i", err);
+	}
+	
+}
+
+//--------------------------------------------------------------
+- (void) loadFileURL:(NSURL*)url
+{
+	AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+	NSString *tracksKey = @"tracks";
+	
+	[asset loadValuesAsynchronouslyForKeys:@[tracksKey] completionHandler: ^{
+		// Perform the following back on the main thread
+		dispatch_async(dispatch_get_main_queue(), ^{
+			// Check to see if the file loaded
+			NSError *error;
+			AVKeyValueStatus status = [asset statusOfValueForKey:tracksKey error:&error];
+			
+			NSLog(@"Asset Tracks: %@", asset.tracks);
+			
+			if (status == AVKeyValueStatusLoaded) {
+				// Asset metadata has been loaded, set up the player.
+				
+				// Extract the video track to get the video size and other properties.
+				if([[asset tracksWithMediaCharacteristic:AVMediaCharacteristicVisual] count])
+				{
+					
+					CVReturn err = [self updatePlayerItem:[AVPlayerItem playerItemWithAsset:asset]];
+					
+					if(err == kCVReturnSuccess)
+					{
+						_bLoading = NO;
+						_bLoaded = YES;
+						_isHSLStream = NO;
+					}
+					else
+					{
+						_bLoading = NO;
+						_bLoaded = NO;
+						_isHSLStream = NO;
+						NSLog(@"There was an error loading the file: %@", error);
+					}
+				}
+			}
+			else {
+				_bLoading = NO;
+				_bLoaded = NO;
+				_isHSLStream = NO;
+				NSLog(@"There was an error loading the file: %@", error);
+			}
+		});
+	}];
+}
+
+- (CVReturn) updatePlayerItem:(AVPlayerItem*)newPlayerItem
+{
+	static const NSString *kItemStatusContext;
+
+	self.playerItem = newPlayerItem;
+	NSLog(@"Tracks: %@", self.playerItem.tracks);
+	
+	
+	AVAssetTrack *videoTrack = [[self.playerItem.asset tracksWithMediaCharacteristic:AVMediaCharacteristicVisual] firstObject];
+	if(videoTrack) // HLS streams tend to not want to report tracks because I dont know
+		_videoSize = [videoTrack naturalSize];
+	else
+		_videoSize = [self.playerItem presentationSize];
+	
+	NSLog(@"Video Size: %@", NSStringFromSize(NSSizeFromCGSize(_videoSize)));
+	
+	_currentTime = kCMTimeZero;
+	_duration = self.playerItem.asset.duration;
+	_frameRate = [videoTrack nominalFrameRate];
+	
+	[self.playerItem addObserver:self forKeyPath:@"status" options:0 context:&kItemStatusContext];
+	
+	// Notify this object when the player reaches the end.
+	// This allows us to loop the video.
+	[[NSNotificationCenter defaultCenter] addObserver:self
+											 selector:@selector(playerItemDidReachEnd:)
+												 name:AVPlayerItemDidPlayToEndTimeNotification
+											   object:self.playerItem];
+	
+	[self.player replaceCurrentItemWithPlayerItem:self.playerItem];
+	
+	// Create and attach video output.
+	self.playerItemVideoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:[self pixelBufferAttributes]];
+//	[self.playerItemVideoOutput autorelease];
+	if (self.playerItemVideoOutput) {
+		[(AVPlayerItemVideoOutput *)self.playerItemVideoOutput setSuppressesPlayerRendering:YES];
+	}
+	[self.player.currentItem addOutput:self.playerItemVideoOutput];
+	
+	// Create CVOpenGLTextureCacheRef for optimal CVPixelBufferRef to GL texture conversion.
+	if (self.useTexture && !_textureCache) {
+		CVReturn err = CVOpenGLTextureCacheCreate(kCFAllocatorDefault, NULL,
+												  CGLGetCurrentContext(), CGLGetPixelFormat(CGLGetCurrentContext()),
+												  NULL, &_textureCache);
+		//                                                              (CFDictionaryRef)ctxAttributes, &_textureCache);
+		if (err != noErr) {
+			NSLog(@"Error at CVOpenGLTextureCacheCreate %d", err);
+		}
+		
+		return err;
+	}
+	
+	return kCVReturnSuccess;
 }
 
 //--------------------------------------------------------------
 - (void)dealloc
 {
     [self stop];
-    
+	
     self.playerItemVideoOutput = nil;
 
     if (_textureCache != NULL) {
@@ -184,9 +266,9 @@
         CVPixelBufferRelease(_latestPixelFrame);
         _latestPixelFrame = NULL;
     }
-    
+	
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    
+	
     if (self.playerItem) {
         [self.playerItem removeObserver:self forKeyPath:@"status"];
         self.playerItem = nil;
@@ -281,7 +363,7 @@
             if (err != noErr) {
                 NSLog(@"Error creating OpenGL texture %d", err);
             }
-        }
+		}
                 
         // Update time.
         _currentTime = self.player.currentItem.currentTime;
@@ -317,12 +399,12 @@
 //      CVPixelBufferGetHeight(_latestPixelFrame),
 //      CVPixelBufferGetBytesPerRow(_latestPixelFrame),
 //      (NSInteger)movieSize.width, (NSInteger)movieSize.height);
-    if ((NSInteger)self.width != CVPixelBufferGetWidth(_latestPixelFrame) || (NSInteger)self.height != CVPixelBufferGetHeight(_latestPixelFrame)) {
-        NSLog(@"CoreVideo pixel buffer is %ld x %ld while self reports size of %ld x %ld. This is most likely caused by a non-square pixel video format such as HDV. Open this video in texture only mode to view it at the appropriate size.",
-              CVPixelBufferGetWidth(_latestPixelFrame), CVPixelBufferGetHeight(_latestPixelFrame), (long)self.width, (long)self.height);
-        return;
-    }
-    
+//    if ((NSInteger)self.width != CVPixelBufferGetWidth(_latestPixelFrame) || (NSInteger)self.height != CVPixelBufferGetHeight(_latestPixelFrame)) {
+//        NSLog(@"CoreVideo pixel buffer is %ld x %ld while self reports size of %ld x %ld. This is most likely caused by a non-square pixel video format such as HDV. Open this video in texture only mode to view it at the appropriate size.",
+//              CVPixelBufferGetWidth(_latestPixelFrame), CVPixelBufferGetHeight(_latestPixelFrame), (long)self.width, (long)self.height);
+//        return;
+//    }
+	
     if (CVPixelBufferGetPixelFormatType(_latestPixelFrame) != kCVPixelFormatType_32ARGB) {
         NSLog(@"CoreVideo frame pixelformat not kCVPixelFormatType_32ARGB: %d, instead %ld", kCVPixelFormatType_32ARGB, (long)CVPixelBufferGetPixelFormatType(_latestPixelFrame));
         return;
@@ -439,6 +521,12 @@
 //--------------------------------------------------------------
 - (void)setCurrentFrame:(int)currentFrame
 {
+	if(_isHSLStream)
+	{
+//		ofLogWarning("ofAVFoundationPlayer::setCurrentFrame Not supported with HLS Stream");
+		return;
+	}
+
     float position = currentFrame / (float)self.totalFrames;
     [self setPosition:position];
 }
@@ -452,6 +540,12 @@
 //--------------------------------------------------------------
 - (void)setPosition:(double)position
 {
+	if(_isHSLStream)
+	{
+//		ofLogWarning("ofAVFoundationPlayer::setPosition Not supported with HLS Stream");
+		return;
+	}
+	
     double time = self.duration * position;
     [self setCurrentTime:time];
 }
@@ -459,6 +553,12 @@
 //--------------------------------------------------------------
 - (void)setPlaybackRate:(double)playbackRate
 {
+	if(_isHSLStream)
+	{
+//		ofLogWarning("ofAVFoundationPlayer::setPlaybackRate Not supported with HLS Stream");
+		return;
+	}
+	
     _playbackRate = playbackRate;
     [_player setRate:_playbackRate];
 }

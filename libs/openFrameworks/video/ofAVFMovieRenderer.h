@@ -37,6 +37,8 @@
     BOOL _bAudioLoaded;
     BOOL _bPaused;
     BOOL _bMovieDone;
+	
+	BOOL _isHSLStream;
 }
 
 @property (nonatomic, retain) AVPlayer * player;
@@ -49,6 +51,8 @@
 @property (nonatomic, assign, getter = isPaused, setter = setPaused:) BOOL bPaused;
 @property (nonatomic, assign, readonly, getter = isMovieDone) BOOL bMovieDone;
 @property (nonatomic, assign, readonly) BOOL isPlaying;
+
+@property (nonatomic, assign, readonly) BOOL isHSLStream;
 
 @property (nonatomic, assign) BOOL useAlpha;
 @property (nonatomic, assign) BOOL useTexture;
