@@ -222,7 +222,7 @@ template<typename PixelType>
 void ofPixels_<PixelType>::copyFrom(const ofPixels_<PixelType> & mom){
 	if(mom.isAllocated()) {
 		allocate(mom.getWidth(), mom.getHeight(), mom.getPixelFormat());
-		memcpy(pixels, mom.getData(), mom.size() * sizeof(PixelType));
+		memcpy(pixels, mom.getData(), getTotalBytes());
 	}
 }
 
@@ -300,7 +300,7 @@ void ofPixels_<PixelType>::setFromExternalPixels(PixelType * newPixels,int w, in
 	width= w;
 	height = h;
 
-	pixelsSize = bytesFromPixelFormat<PixelType>(w,h,_pixelFormat);
+	pixelsSize = bytesFromPixelFormat<PixelType>(w,h,_pixelFormat) / sizeof(PixelType);
 
 	pixels = newPixels;
 	pixelsOwner = false;
@@ -386,7 +386,7 @@ void ofPixels_<PixelType>::allocate(int w, int h, ofPixelFormat format){
 
 	int newSize = bytesFromPixelFormat<PixelType>(w,h,format);
 	//we check if we are already allocated at the right size
-	if(bAllocated && newSize==size()){
+	if(bAllocated && newSize==getTotalBytes()){
         pixelFormat = format;
         width = w;
         height = h;
@@ -400,7 +400,7 @@ void ofPixels_<PixelType>::allocate(int w, int h, ofPixelFormat format){
 	width 		= w;
 	height 		= h;
 
-	pixelsSize = newSize;
+	pixelsSize = newSize / sizeof(PixelType);
 
 	pixels = new PixelType[newSize];
 	bAllocated = true;
@@ -511,49 +511,13 @@ int ofPixels_<PixelType>::getPixelIndex(int x, int y) const {
 }
 
 template<typename PixelType>
+ofColor_<PixelType> ofPixels_<PixelType>::getColor(int index) const {
+	return Pixel(pixels + index,getNumChannels(),pixelFormat).getColor();
+}
+
+template<typename PixelType>
 ofColor_<PixelType> ofPixels_<PixelType>::getColor(int x, int y) const {
-	ofColor_<PixelType> c;
-	int index = getPixelIndex(x, y);
-
-	switch(pixelFormat){
-		case OF_PIXELS_RGB:
-			c.set( pixels[index], pixels[index+1], pixels[index+2] );
-			break;
-		case OF_PIXELS_BGR:
-			c.set( pixels[index+2], pixels[index+1], pixels[index] );
-			break;
-		case OF_PIXELS_RGBA:
-			c.set( pixels[index], pixels[index+1], pixels[index+2], pixels[index+3] );
-			break;
-		case OF_PIXELS_BGRA:
-			c.set( pixels[index+2], pixels[index+1], pixels[index], pixels[index+3] );
-			break;
-		case OF_PIXELS_GRAY:
-			c.set( pixels[index] );
-			break;
-		case OF_PIXELS_GRAY_ALPHA:
-			c.set( pixels[index], pixels[index], pixels[index], pixels[index+1] );
-			break;
-		case OF_PIXELS_RGB565:
-		case OF_PIXELS_NV12:
-		case OF_PIXELS_NV21:
-		case OF_PIXELS_YV12:
-		case OF_PIXELS_I420:
-		case OF_PIXELS_YUY2:
-		case OF_PIXELS_UYVY:
-		case OF_PIXELS_Y:
-		case OF_PIXELS_U:
-		case OF_PIXELS_V:
-		case OF_PIXELS_UV:
-		case OF_PIXELS_VU:
-		case OF_PIXELS_UNKNOWN:
-		default:
-			ofLogWarning() << "returning color not supported yet for " << ofToString(pixelFormat) << " format";
-			return 0;
-			break;
-	}
-
-	return c;
+	return getColor(getPixelIndex(x, y));
 }
 
 template<typename PixelType>

@@ -387,7 +387,7 @@ void ofAppGlutWindow::close(){
 #ifdef TARGET_LINUX
 	glutLeaveMainLoop();
 #else
-	ofExit(0);
+	std::exit(0);
 #endif
 }
 
@@ -777,7 +777,6 @@ void ofAppGlutWindow::dragEvent(char ** names, int howManyFiles, int dragX, int 
 
 //------------------------------------------------------------
 void ofAppGlutWindow::idle_cb(void) {
-	instance->currentRenderer->update();
 	instance->events().notifyUpdate();
 
 	glutPostRedisplay();
